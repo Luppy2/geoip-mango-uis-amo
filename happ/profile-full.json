@@ -32,5 +32,6 @@
         "255.255.255.255"
     ],
     "DomainStrategy": "IPOnDemand",
-    "FakeDNS": "true"
+    "FakeDNS": "true",
+    "LastUpdated": "1783677974"
 }
