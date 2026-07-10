@@ -8,16 +8,24 @@
     "DomesticDNSDomain": "",
     "DomesticDNSIP": "8.8.8.8",
     "Geoipurl": "https://github.com/Luppy2/geoip-mango-uis-amo/releases/download/latest/geoip.dat",
-    "Geositeurl": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat",
+    "Geositeurl": "https://github.com/Luppy2/geoip-mango-uis-amo/releases/download/latest/geosite.dat",
     "DnsHosts": {
         "cloudflare-dns.com": "1.1.1.1"
     },
-    "DirectSites": [],
+    "DirectSites": [
+        "geosite:category-bank-ru",
+        "geosite:category-gov-ru",
+        "geosite:mango",
+        "geosite:uis",
+        "geosite:amocrm"
+    ],
     "DirectIp": [
         "geoip:ru",
         "geoip:mango",
         "geoip:uis",
         "geoip:amocrm",
+        "geoip:banks",
+        "geoip:gov",
         "10.0.0.0/8",
         "172.16.0.0/12",
         "192.168.0.0/16",
