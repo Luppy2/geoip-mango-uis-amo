@@ -1,9 +1,9 @@
-name: Build Custom V2Ray GeoIP (RU + Mango + UIS + amoCRM)
+name: Build Custom V2Ray GeoIP + GeoSite
 
 on:
   schedule:
     - cron: '0 0 * * 1'   # каждую неделю, понедельник 00:00 UTC
-  workflow_dispatch:       # ручной запуск кнопкой
+  workflow_dispatch:
   push:
     branches: [ main ]
     paths:
@@ -25,6 +25,7 @@ jobs:
         with:
           go-version: '1.22'
 
+      # ---------- GEOIP ----------
       - name: Build custom geoip.dat
         run: |
           set -e
@@ -32,11 +33,9 @@ jobs:
           cd geoip-builder
           mkdir -p custom-ips
 
-          # --- Базовые списки RU и PRIVATE из официального источника v2fly ---
           curl -sSL "https://raw.githubusercontent.com/v2fly/geoip/release/text/ru.txt" -o custom-ips/ru.txt
           curl -sSL "https://raw.githubusercontent.com/v2fly/geoip/release/text/private.txt" -o custom-ips/private.txt
 
-          # --- Функция: получить префиксы ASN из RIPEstat, при неудаче — fallback ---
           fetch_asn () {
             local asn="$1"; local out="$2"; local fallback="$3"
             echo "Fetching AS${asn} ..."
@@ -44,21 +43,27 @@ jobs:
               "https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS${asn}" \
               | python3 -c "import sys,json; d=json.load(sys.stdin)['data']; [print(p['prefix']) for p in d['prefixes'] if ':' not in p['prefix']]" \
               > "$out" 2>/dev/null || true
-            if [ ! -s "$out" ]; then
-              echo "RIPE недоступен для AS${asn}, использую fallback"
-              cp "$fallback" "$out"
-            fi
+            if [ ! -s "$out" ]; then echo "fallback AS${asn}"; cp "$fallback" "$out"; fi
           }
 
-          # Mango Telecom = AS39684, UIS/NovoSystem = AS34832, amoCRM/UnitedNet = AS39134
-          fetch_asn 39684 custom-ips/mango.txt  "$GITHUB_WORKSPACE/sources/mango.txt"
+          # Телефония / CRM
+          # Mango: AS39684 (панель/ЛК) + AS51115 (HLL — голосовые/SIP/RTP серверы!)
+          fetch_asn 39684 /tmp/mango1.txt "$GITHUB_WORKSPACE/sources/mango.txt"
+          fetch_asn 51115 /tmp/mango2.txt "$GITHUB_WORKSPACE/sources/mango.txt"
+          cat /tmp/mango1.txt /tmp/mango2.txt "$GITHUB_WORKSPACE/sources/mango.txt" 2>/dev/null | grep -E '^[0-9]' | sort -u > custom-ips/mango.txt
           fetch_asn 34832 custom-ips/uis.txt    "$GITHUB_WORKSPACE/sources/uis.txt"
           fetch_asn 39134 custom-ips/amocrm.txt "$GITHUB_WORKSPACE/sources/amocrm.txt"
 
-          echo "=== Размеры списков ==="
-          wc -l custom-ips/*.txt
+          # Банки: Сбер AS35237 + Т-Банк AS43399 (объединяем в banks.txt)
+          fetch_asn 35237 /tmp/sber.txt "$GITHUB_WORKSPACE/sources/banks.txt"
+          fetch_asn 43399 /tmp/tbank.txt "$GITHUB_WORKSPACE/sources/banks.txt"
+          cat /tmp/sber.txt /tmp/tbank.txt "$GITHUB_WORKSPACE/sources/banks.txt" 2>/dev/null | grep -E '^[0-9]' | sort -u > custom-ips/banks.txt
 
-          # --- Конфиг компилятора ---
+          # Госуслуги: только узкий блок Ростелекома (не весь ASN!)
+          grep -E '^[0-9]' "$GITHUB_WORKSPACE/sources/gov.txt" > custom-ips/gov.txt
+
+          echo "=== Размеры geoip-списков ==="; wc -l custom-ips/*.txt
+
           cat > config.json << 'EOF'
           {
             "input": [
@@ -66,24 +71,67 @@ jobs:
               { "type": "text", "action": "add", "args": { "name": "private", "uri": "custom-ips/private.txt" } },
               { "type": "text", "action": "add", "args": { "name": "mango",   "uri": "custom-ips/mango.txt" } },
               { "type": "text", "action": "add", "args": { "name": "uis",     "uri": "custom-ips/uis.txt" } },
-              { "type": "text", "action": "add", "args": { "name": "amocrm",  "uri": "custom-ips/amocrm.txt" } }
+              { "type": "text", "action": "add", "args": { "name": "amocrm",  "uri": "custom-ips/amocrm.txt" } },
+              { "type": "text", "action": "add", "args": { "name": "banks",   "uri": "custom-ips/banks.txt" } },
+              { "type": "text", "action": "add", "args": { "name": "gov",     "uri": "custom-ips/gov.txt" } }
             ],
             "output": [
               { "type": "v2rayGeoIPDat", "action": "output", "args": { "outputName": "geoip.dat", "outputDir": "../" } }
             ]
           }
           EOF
-
           go run . -c config.json
           cd ..
           ls -la geoip.dat
+
+      # ---------- GEOSITE ----------
+      - name: Build custom geosite.dat
+        run: |
+          set -e
+          git clone --depth 1 https://github.com/v2fly/domain-list-community.git dlc
+          cd dlc
+          mkdir -p custom-data
+
+          # Готовые RU-категории: банки, госсервисы (+ телефония/CRM домены)
+          CATEGORIES="category-bank-ru category-gov-ru"
+
+          copy_with_deps() {
+            local file=$1
+            if [ -f "data/$file" ] && [ ! -f "custom-data/$file" ]; then
+              cp "data/$file" "custom-data/"
+              grep -Eo "^include:[a-zA-Z0-9_-]+" "data/$file" | cut -d':' -f2 | while read -r dep; do
+                copy_with_deps "$dep"
+              done
+            fi
+          }
+          for cat in $CATEGORIES; do copy_with_deps "$cat"; done
+
+          # Свои домены телефонии и CRM
+          cat > custom-data/mango <<'EOF'
+          mango-office.ru
+          mangotele.com
+          mango-office.com
+          EOF
+          cat > custom-data/uis <<'EOF'
+          uiscom.ru
+          EOF
+          cat > custom-data/amocrm <<'EOF'
+          amocrm.ru
+          amocrm.com
+          EOF
+
+          rm -rf data && mv custom-data data
+          go run main.go --outputdir=../ --datapath=data/
+          cd ..
+          if [ -f dlc.dat ]; then mv dlc.dat geosite.dat; fi
+          ls -la geosite.dat
 
       - name: Publish to GitHub Releases
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Custom V2Ray GeoIP: категории ru, private, mango, uis, amocrm." > release.txt
-          echo "Собрано автоматически из RIPE (AS39684 Mango, AS34832 UIS, AS39134 amoCRM)." >> release.txt
-          echo "Дата сборки: $(date -u '+%Y-%m-%d %H:%M UTC')" >> release.txt
+          echo "Custom V2Ray rules: geoip (ru, private, mango, uis, amocrm, banks, gov)" > release.txt
+          echo "+ geosite (category-bank-ru, category-gov-ru, mango, uis, amocrm)" >> release.txt
+          echo "Собрано: $(date -u '+%Y-%m-%d %H:%M UTC')" >> release.txt
           gh release delete latest --cleanup-tag -y || true
-          gh release create "latest" geoip.dat -F release.txt -t "Custom GeoIP (RU + Mango + UIS + amoCRM)"
+          gh release create "latest" geoip.dat geosite.dat -F release.txt -t "Custom Rules (RU + Telephony + CRM + Banks + Gov)"
