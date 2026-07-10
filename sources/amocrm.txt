@@ -1,0 +1,4 @@
+# amoCRM — AS39134 (UnitedNet / United Net LLC). Fallback-список.
+23.111.96.0/20
+88.212.248.0/22
+88.212.192.0/20

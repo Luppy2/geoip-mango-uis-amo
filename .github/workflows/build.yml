@@ -1,0 +1,89 @@
+name: Build Custom V2Ray GeoIP (RU + Mango + UIS + amoCRM)
+
+on:
+  schedule:
+    - cron: '0 0 * * 1'   # каждую неделю, понедельник 00:00 UTC
+  workflow_dispatch:       # ручной запуск кнопкой
+  push:
+    branches: [ main ]
+    paths:
+      - 'sources/**'
+      - '.github/workflows/build.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build custom geoip.dat
+        run: |
+          set -e
+          git clone --depth 1 https://github.com/v2fly/geoip.git geoip-builder
+          cd geoip-builder
+          mkdir -p custom-ips
+
+          # --- Базовые списки RU и PRIVATE из официального источника v2fly ---
+          curl -sSL "https://raw.githubusercontent.com/v2fly/geoip/release/text/ru.txt" -o custom-ips/ru.txt
+          curl -sSL "https://raw.githubusercontent.com/v2fly/geoip/release/text/private.txt" -o custom-ips/private.txt
+
+          # --- Функция: получить префиксы ASN из RIPEstat, при неудаче — fallback ---
+          fetch_asn () {
+            local asn="$1"; local out="$2"; local fallback="$3"
+            echo "Fetching AS${asn} ..."
+            curl -sSL --max-time 60 \
+              "https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS${asn}" \
+              | python3 -c "import sys,json; d=json.load(sys.stdin)['data']; [print(p['prefix']) for p in d['prefixes'] if ':' not in p['prefix']]" \
+              > "$out" 2>/dev/null || true
+            if [ ! -s "$out" ]; then
+              echo "RIPE недоступен для AS${asn}, использую fallback"
+              cp "$fallback" "$out"
+            fi
+          }
+
+          # Mango Telecom = AS39684, UIS/NovoSystem = AS34832, amoCRM/UnitedNet = AS39134
+          fetch_asn 39684 custom-ips/mango.txt  "$GITHUB_WORKSPACE/sources/mango.txt"
+          fetch_asn 34832 custom-ips/uis.txt    "$GITHUB_WORKSPACE/sources/uis.txt"
+          fetch_asn 39134 custom-ips/amocrm.txt "$GITHUB_WORKSPACE/sources/amocrm.txt"
+
+          echo "=== Размеры списков ==="
+          wc -l custom-ips/*.txt
+
+          # --- Конфиг компилятора ---
+          cat > config.json << 'EOF'
+          {
+            "input": [
+              { "type": "text", "action": "add", "args": { "name": "ru",      "uri": "custom-ips/ru.txt" } },
+              { "type": "text", "action": "add", "args": { "name": "private", "uri": "custom-ips/private.txt" } },
+              { "type": "text", "action": "add", "args": { "name": "mango",   "uri": "custom-ips/mango.txt" } },
+              { "type": "text", "action": "add", "args": { "name": "uis",     "uri": "custom-ips/uis.txt" } },
+              { "type": "text", "action": "add", "args": { "name": "amocrm",  "uri": "custom-ips/amocrm.txt" } }
+            ],
+            "output": [
+              { "type": "v2rayGeoIPDat", "action": "output", "args": { "outputName": "geoip.dat", "outputDir": "../" } }
+            ]
+          }
+          EOF
+
+          go run . -c config.json
+          cd ..
+          ls -la geoip.dat
+
+      - name: Publish to GitHub Releases
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Custom V2Ray GeoIP: категории ru, private, mango, uis, amocrm." > release.txt
+          echo "Собрано автоматически из RIPE (AS39684 Mango, AS34832 UIS, AS39134 amoCRM)." >> release.txt
+          echo "Дата сборки: $(date -u '+%Y-%m-%d %H:%M UTC')" >> release.txt
+          gh release delete latest --cleanup-tag -y || true
+          gh release create "latest" geoip.dat -F release.txt -t "Custom GeoIP (RU + Mango + UIS + amoCRM)"

@@ -1,0 +1,3 @@
+# UIS / uiscom — AS34832 (NOVOSYSTEM-AS)
+# Источник: RIPE announced-prefixes AS34832
+195.211.120.0/22
